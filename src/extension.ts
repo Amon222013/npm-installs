@@ -14,7 +14,6 @@ const SETTING_JSON: string = '/npm-installs_setting.json';
 export function activate(context: vscode.ExtensionContext): void {
 
     console.log('Congratulations, your extension "npm-installs" is now active!');
-    // Projectディレクトリパス取得
     const workspaceInfo = vscode.workspace.workspaceFolders![0];
     const projectPath = `${workspaceInfo.uri.path}`;
     const fullPath = projectPath.replace(':', '');
@@ -23,10 +22,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('npm-installs.install-multi', async () => {
-            // setting.json取得用パス
             const readFilePath = formatPath + SETTING_JSON;
-            // jsonファイルからディレクトリ名取得し、配列に入れる
-            let settingInfo;
+            let settingInfo: SettingJson;
             try {
                 const blob: Uint8Array =  await vscode.workspace.fs.readFile(vscode.Uri.file(readFilePath));
                 settingInfo = JSON.parse(Buffer.from(blob).toString('utf8'));
@@ -36,14 +33,13 @@ export function activate(context: vscode.ExtensionContext): void {
             }
     
             if(settingInfo.dir.length === 0){
-                // モーダルで完了通知
                 vscode.window.showInformationMessage('Configuration not found, please check setting.json.', {modal: true});
                 return;
             }
-    
-            for await (const dir of settingInfo.dir) {
+
+            await Promise.all(settingInfo.dir.map(async dir => {
                 await execProc(projectPath, fullPath, dir, osType);
-            }
+            }));
             vscode.window.showInformationMessage('npm install multi Done', {modal: true});
         })
     )
@@ -68,15 +64,14 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand('npm-installs.install-all', async () => {
             const filePath = await findFoldersWithFile(formatPath, 'package.json', formatPath);
             if(filePath.length === 0){
-                // モーダルで完了通知
                 vscode.window.showInformationMessage('not exist package.json file for this directory', {modal: true});
                 return;
             }
 
-            for await (const dir of filePath) {
-                const dirPath = dir.substring(formatPath.length + 1, dir.length);
-                await execProc(projectPath, fullPath, dirPath, osType);
-            }
+            await Promise.all(filePath.map(async dir => {
+                await execProc(projectPath, fullPath, dir, osType);
+            }));
+                
             vscode.window.showInformationMessage('npm install Done', {modal: true});
         })
     )
@@ -132,13 +127,10 @@ async function findFoldersWithFile(directory: string, targetFileName: string, fo
 
         const regex = new RegExp(/^\./);
         if(name === 'node_modules' || regex.test(name)) continue;
-        // if(name === 'node_modules') continue;
     
         if (fileType === 2) {
-          // ディレクトリの場合、再帰的に検索を行う
           await findFoldersWithFile(filePath, targetFileName, formatPath, results);
         } else if (fileType === 1 && name === targetFileName) {
-          // ファイルが存在する場合、結果にディレクトリを追加
           const tmpDir = filePath.substring(formatPath.length + 1, filePath.length);
           const dirPath = tmpDir.substring(0, tmpDir.indexOf('/'));
           results.push(dirPath);
