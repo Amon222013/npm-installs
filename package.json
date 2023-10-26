@@ -3,6 +3,11 @@
   "displayName": "npm installs",
   "description": "npm installs",
   "version": "0.0.1",
+  "publisher": "4mon",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Amon222013/npm-installs"
+  },
   "engines": {
     "vscode": "^1.79.0"
   },
