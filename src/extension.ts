@@ -18,24 +18,31 @@ export function activate(context: vscode.ExtensionContext): void {
     const workspaceInfo = vscode.workspace.workspaceFolders![0];
     const projectPath = `${workspaceInfo.uri.path}`;
     const fullPath = projectPath.replace(':', '');
-    const formatPath = projectPath.substring(3, projectPath.length);
+    const osType = process.platform;
+    const formatPath = osType === 'win32' ? projectPath.substring(3, projectPath.length) : fullPath;
 
     context.subscriptions.push(
         vscode.commands.registerCommand('npm-installs.install-multi', async () => {
             // setting.json取得用パス
             const readFilePath = formatPath + SETTING_JSON;
             // jsonファイルからディレクトリ名取得し、配列に入れる
-            const blob: Uint8Array =  await vscode.workspace.fs.readFile(vscode.Uri.file(readFilePath));
-            const settingInfo: SettingJson = JSON.parse(Buffer.from(blob).toString('utf8'));
-    
-            if(settingInfo.dir.length === 0){
-                // モーダルで完了通知
+            let settingInfo;
+            try {
+                const blob: Uint8Array =  await vscode.workspace.fs.readFile(vscode.Uri.file(readFilePath));
+                settingInfo = JSON.parse(Buffer.from(blob).toString('utf8'));
+            } catch(err) {
                 vscode.window.showInformationMessage('read fail setting json file', {modal: true});
                 return;
             }
     
+            if(settingInfo.dir.length === 0){
+                // モーダルで完了通知
+                vscode.window.showInformationMessage('Configuration not found, please check setting.json.', {modal: true});
+                return;
+            }
+    
             for await (const dir of settingInfo.dir) {
-                await execProc(projectPath, fullPath, dir);
+                await execProc(projectPath, fullPath, dir, osType);
             }
             vscode.window.showInformationMessage('npm install multi Done', {modal: true});
         })
@@ -48,7 +55,7 @@ export function activate(context: vscode.ExtensionContext): void {
             });
 
             if (dir !== undefined) {
-                await execProc(projectPath, fullPath, dir);
+                await execProc(projectPath, fullPath, dir, osType);
             } else {
                 return;
             }
@@ -68,15 +75,15 @@ export function activate(context: vscode.ExtensionContext): void {
 
             for await (const dir of filePath) {
                 const dirPath = dir.substring(formatPath.length + 1, dir.length);
-                await execProc(projectPath, fullPath, dirPath);
+                await execProc(projectPath, fullPath, dirPath, osType);
             }
             vscode.window.showInformationMessage('npm install Done', {modal: true});
         })
     )
 }
 
-async function execProc(projectPath: string, fullPath: string, dir: string){
-    const osType = process.platform;
+async function execProc(projectPath: string, fullPath: string, dir: string, osType: string){
+    
     let execPath: string, rmCommands: string[];
     const tmpPath = `${projectPath}/${dir}`
     if(osType === 'win32'){
