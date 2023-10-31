@@ -14,15 +14,18 @@ const SETTING_JSON: string = '/npm-installs_setting.json';
 export function activate(context: vscode.ExtensionContext): void {
 
     console.log('Congratulations, your extension "npm-installs" is now active!');
-    const workspaceInfo = vscode.workspace.workspaceFolders![0];
-    const projectPath = `${workspaceInfo.uri.path}`;
-    const fullPath = projectPath.replace(':', '');
     const osType = process.platform;
-    const formatPath = osType === 'win32' ? projectPath.substring(3, projectPath.length) : fullPath;
+    const projectPath: string[] = [];
+    for(const workspaceInfo of vscode.workspace.workspaceFolders!) {
+        const tmpPjPath = osType === 'win32' ? workspaceInfo.uri.fsPath : workspaceInfo.uri.path;
+        projectPath.push(tmpPjPath);
+    }
 
     context.subscriptions.push(
         vscode.commands.registerCommand('npm-installs.install-multi', async () => {
-            const readFilePath = formatPath + SETTING_JSON;
+            const pjPath = await selectProject(projectPath);
+
+            const readFilePath = pjPath + SETTING_JSON;
             let settingInfo: SettingJson;
             try {
                 const blob: Uint8Array =  await vscode.workspace.fs.readFile(vscode.Uri.file(readFilePath));
@@ -38,7 +41,7 @@ export function activate(context: vscode.ExtensionContext): void {
             }
 
             await Promise.all(settingInfo.dir.map(async dir => {
-                await execProc(projectPath, fullPath, dir, osType);
+                await execProc(pjPath, dir, osType);
             }));
             vscode.window.showInformationMessage('npm install multi Done', {modal: true});
         })
@@ -46,12 +49,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('npm-installs.install-single', async () => {
+            const pjPath = await selectProject(projectPath);
+
             const dir = await vscode.window.showInputBox({
                 title: 'npm install folder'
             });
 
             if (dir !== undefined) {
-                await execProc(projectPath, fullPath, dir, osType);
+                await execProc(pjPath, dir, osType);
             } else {
                 return;
             }
@@ -62,14 +67,16 @@ export function activate(context: vscode.ExtensionContext): void {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('npm-installs.install-all', async () => {
-            const filePath = await findFoldersWithFile(formatPath, 'package.json', formatPath);
+            const pjPath = await selectProject(projectPath);
+            
+            const filePath = await findFoldersWithFile(pjPath, 'package.json', pjPath);
             if(filePath.length === 0){
                 vscode.window.showInformationMessage('not exist package.json file for this directory', {modal: true});
                 return;
             }
 
             await Promise.all(filePath.map(async dir => {
-                await execProc(projectPath, fullPath, dir, osType);
+                await execProc(pjPath, dir, osType);
             }));
                 
             vscode.window.showInformationMessage('npm install Done', {modal: true});
@@ -77,13 +84,30 @@ export function activate(context: vscode.ExtensionContext): void {
     )
 }
 
-async function execProc(projectPath: string, fullPath: string, dir: string, osType: string){
+async function selectProject(projectPath: string[]): Promise<string> {
+    let pjPath;
+    if(projectPath.length > 1) {
+        const options: vscode.QuickPickOptions = {placeHolder: "In what directory do you run npm install?"};
+        pjPath = await vscode.window
+            .showQuickPick(projectPath, options)
+            .then(select => {return select;});
+        
+        if(pjPath === undefined) {
+            throw new Error('Please select a project.');
+        }
+    } else {
+        pjPath = projectPath[0];
+    }
+    return pjPath;
+}
+
+async function execProc(projectPath: string, dir: string, osType: string){
     
     let execPath: string, rmCommands: string[];
     const tmpPath = `${projectPath}/${dir}`
     if(osType === 'win32'){
-        execPath = tmpPath.slice(1).replaceAll('/', '\\');
-        console.log('execPath: ', execPath);
+        execPath = tmpPath;
+        console.log('execPath: ', tmpPath);
         rmCommands = [
             'if exist node_modules rmdir /s /q node_modules',
             'if exist package-lock.json del package-lock.json'
@@ -117,7 +141,7 @@ async function execSyncCommands(commands: string[], execPath: string){
     }
 }
 
-async function findFoldersWithFile(directory: string, targetFileName: string, formatPath: string, results: string[] = []) {
+async function findFoldersWithFile(directory: string, targetFileName: string, projectPath: string, results: string[] = []) {
     const files = await vscode.workspace.fs.readDirectory(vscode.Uri.file(directory));
   
     for (const file of files) {
@@ -129,9 +153,9 @@ async function findFoldersWithFile(directory: string, targetFileName: string, fo
         if(name === 'node_modules' || regex.test(name)) continue;
     
         if (fileType === 2) {
-          await findFoldersWithFile(filePath, targetFileName, formatPath, results);
+          await findFoldersWithFile(filePath, targetFileName, projectPath, results);
         } else if (fileType === 1 && name === targetFileName) {
-          const tmpDir = filePath.substring(formatPath.length + 1, filePath.length);
+          const tmpDir = filePath.substring(projectPath.length + 1, filePath.length);
           const dirPath = tmpDir.substring(0, tmpDir.indexOf('/'));
           results.push(dirPath);
         }
