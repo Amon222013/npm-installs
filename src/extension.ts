@@ -23,63 +23,72 @@ export function activate(context: vscode.ExtensionContext): void {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('npm-installs.install-multi', async () => {
-            const pjPath = await selectProject(projectPath);
-
-            const readFilePath = pjPath + SETTING_JSON;
-            let settingInfo: SettingJson;
-            try {
-                const blob: Uint8Array =  await vscode.workspace.fs.readFile(vscode.Uri.file(readFilePath));
-                settingInfo = JSON.parse(Buffer.from(blob).toString('utf8'));
-            } catch(err) {
-                vscode.window.showInformationMessage('read fail setting json file', {modal: true});
-                return;
-            }
+            vscode.window.withProgress({location: vscode.ProgressLocation.Window, title: 'npm installs processing'}, async progress => {
+                const pjPath = await selectProject(projectPath);
     
-            if(settingInfo.dir.length === 0){
-                vscode.window.showInformationMessage('Configuration not found, please check setting.json.', {modal: true});
-                return;
-            }
-
-            await Promise.all(settingInfo.dir.map(async dir => {
-                await execProc(pjPath, dir, osType);
-            }));
-            vscode.window.showInformationMessage('npm install multi Done', {modal: true});
+                const readFilePath = pjPath + SETTING_JSON;
+                let settingInfo: SettingJson;
+                try {
+                    const blob: Uint8Array =  await vscode.workspace.fs.readFile(vscode.Uri.file(readFilePath));
+                    settingInfo = JSON.parse(Buffer.from(blob).toString('utf8'));
+                } catch(err) {
+                    vscode.window.showInformationMessage('read fail setting json file', {modal: true});
+                    return;
+                }
+        
+                if(settingInfo.dir.length === 0){
+                    vscode.window.showInformationMessage('Configuration not found, please check setting.json.', {modal: true});
+                    return;
+                }
+    
+                await Promise.all(settingInfo.dir.map(async dir => {
+                    await execProc(pjPath, dir, osType);
+                }));
+                vscode.window.showInformationMessage('npm install multi Done', {modal: true});
+            })
         })
     )
 
     context.subscriptions.push(
         vscode.commands.registerCommand('npm-installs.install-single', async () => {
-            const pjPath = await selectProject(projectPath);
-
-            const dir = await vscode.window.showInputBox({
-                title: 'npm install folder'
+            vscode.window.withProgress({location: vscode.ProgressLocation.Window, title: 'npm installs processing'}, async progress => {
+                const pjPath = await selectProject(projectPath);
+    
+                const dir = await vscode.window.showInputBox({
+                    title: 'npm install folder'
+                });
+    
+                if (dir !== undefined) {
+                    await execProc(pjPath, dir, osType);
+                } else {
+                    return;
+                }
+    
+                vscode.window.showInformationMessage('npm install Done', {modal: true});
+                // 処理
             });
-
-            if (dir !== undefined) {
-                await execProc(pjPath, dir, osType);
-            } else {
-                return;
-            }
-
-            vscode.window.showInformationMessage('npm install Done', {modal: true});
         })
     )
 
     context.subscriptions.push(
         vscode.commands.registerCommand('npm-installs.install-all', async () => {
-            const pjPath = await selectProject(projectPath);
-            
-            const filePath = await findFoldersWithFile(pjPath, 'package.json', pjPath);
-            if(filePath.length === 0){
-                vscode.window.showInformationMessage('not exist package.json file for this directory', {modal: true});
-                return;
-            }
-
-            await Promise.all(filePath.map(async dir => {
-                await execProc(pjPath, dir, osType);
-            }));
+            vscode.window.withProgress({location: vscode.ProgressLocation.Window, title: 'npm installs processing'}, async progress => {
+                const pjPath = await selectProject(projectPath);
                 
-            vscode.window.showInformationMessage('npm install Done', {modal: true});
+                progress.report({ message: 'search package.json file'});
+                const filePath = await findFoldersWithFile(pjPath, 'package.json', pjPath);
+                if(filePath.length === 0){
+                    vscode.window.showInformationMessage('not exist package.json file for this directory', {modal: true});
+                    return;
+                }
+    
+                progress.report({ message: 'installing'});
+                await Promise.all(filePath.map(async dir => {
+                    await execProc(pjPath, dir, osType);
+                }));
+                    
+                vscode.window.showInformationMessage('npm install Done', {modal: true});
+            })
         })
     )
 }
