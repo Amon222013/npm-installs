@@ -2,7 +2,7 @@
   "name": "npm-installs",
   "displayName": "npm installs",
   "description": "npm installs",
-  "version": "0.0.4",
+  "version": "0.1.0",
   "publisher": "4mon",
   "repository": {
     "type": "git",
