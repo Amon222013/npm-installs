@@ -1,9 +1,8 @@
-# Change Log
+## 0.1.1 (2023-11-15)
+- Logs of npm installations are now displayed in the VSCode output channel.
 
-All notable changes to the "npm-installs" extension will be documented in this file.
+## 0.1.0 (2023-11-15)
+- Added a status bar on the VSCode status bar to indicate that processing is in progress.
 
-Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
-
-## [Unreleased]
-
-- Initial release
+## 0.0.3 (2023-10-27)
+- Parallelized installation process.

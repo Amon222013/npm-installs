@@ -6,13 +6,14 @@ type SettingJson = {
 }
 
 const SETTING_JSON: string = '/npm-installs_setting.json';
+const outputChannel = vscode.window.createOutputChannel('npm installs');
 
 /**
  * 
  * @param context 
  */
 export function activate(context: vscode.ExtensionContext): void {
-
+    
     console.log('Congratulations, your extension "npm-installs" is now active!');
     const osType = process.platform;
     const projectPath: string[] = [];
@@ -65,7 +66,6 @@ export function activate(context: vscode.ExtensionContext): void {
                 }
     
                 vscode.window.showInformationMessage('npm install Done', {modal: true});
-                // 処理
             });
         })
     )
@@ -129,10 +129,17 @@ async function execProc(projectPath: string, dir: string, osType: string){
             'rm -f package-lock.json'
         ];
     }
+
     try {
         await execSyncCommands(rmCommands, execPath);
-        await execSyncCommands(['npm install'], execPath);
+        await execSyncCommands(['npm install'], execPath)
+            .then(output => {
+                outputChannel.append(`===================================================\nexecute path: ${execPath}\n${output}\n`);
+                outputChannel.show();
+            });
     } catch(err: any) {
+        outputChannel.append(`===================================================\nexecute path: ${execPath}\n${err.stack}\n`);
+        outputChannel.show();
         vscode.window.showInformationMessage('Fail npm install', {modal: true});
         throw new Error(err);
     }
@@ -141,12 +148,10 @@ async function execProc(projectPath: string, dir: string, osType: string){
 async function execSyncCommands(commands: string[], execPath: string){
     try {
         const commandString = commands.join(' && ');
-      
-        const output = execSync(commandString, { cwd: execPath, encoding: 'utf-8'});
-        console.log('Commands executed successfully');
-        console.log('Output:', output);
-    } catch (error) {
-        console.error('Error executing commands:', error);
+        return execSync(commandString, { cwd: execPath, encoding: 'utf-8'});
+    } catch (err: any) {
+        console.error('Error executing commands:', err);
+        throw new Error(err);
     }
 }
 
