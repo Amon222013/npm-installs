@@ -27,6 +27,13 @@ Note：
       ```
     3. Open the command palette and select "npm-install-multi".
 
+
+# Settings
+| Setting | Default | Description |
+|---|---|---|
+| `npm-installs.concurrency` | `0` | Max number of `npm install` run in parallel. `0` = auto (CPU count, up to 4). |
+| `npm-installs.cleanInstall` | `true` | Delete `node_modules` and `package-lock.json` before installing. Set to `false` to keep the lock file (faster). |
+
 # 使い方
 "npm installs"には3つの機能があります。  
 ※ワークスペースを利用している場合、プロジェクト一覧が表示されますので、npm installをするプロジェクトを選択してください。  
@@ -53,3 +60,9 @@ Note：
       ※プロジェクト直下は""を記述する
       ```
     3. コマンドパレットから"npm-install-multi"を選択する
+
+# 設定
+| 設定 | 既定値 | 説明 |
+|---|---|---|
+| `npm-installs.concurrency` | `0` | 同時に実行する `npm install` の最大数。`0` は自動（CPU数、最大4）。 |
+| `npm-installs.cleanInstall` | `true` | インストール前に `node_modules` と `package-lock.json` を削除する。`false` にすると lock ファイルを残し、高速になります。 |

@@ -1,180 +1,151 @@
 import * as vscode from 'vscode';
-import { execSync } from 'child_process';
+import { findDirsWithFile, installDirs, InstallOptions, InstallResult } from './installer';
 
 type SettingJson = {
     dir: string[]
-}
+};
 
-const SETTING_JSON: string = '/npm-installs_setting.json';
+const SETTING_JSON = 'npm-installs_setting.json';
+const SEPARATOR = '===================================================';
 const outputChannel = vscode.window.createOutputChannel('npm installs');
 
 /**
- * 
- * @param context 
+ * Commands return the install results so they can be awaited (e.g. from tests).
+ * Returns undefined when the command was cancelled before installing.
  */
 export function activate(context: vscode.ExtensionContext): void {
-    
-    console.log('Congratulations, your extension "npm-installs" is now active!');
-    const osType = process.platform;
-    const projectPath: string[] = [];
-    for(const workspaceInfo of vscode.workspace.workspaceFolders!) {
-        const tmpPjPath = osType === 'win32' ? workspaceInfo.uri.fsPath : workspaceInfo.uri.path;
-        projectPath.push(tmpPjPath);
-    }
+
+    context.subscriptions.push(outputChannel);
 
     context.subscriptions.push(
         vscode.commands.registerCommand('npm-installs.install-multi', async () => {
-            vscode.window.withProgress({location: vscode.ProgressLocation.Window, title: 'npm installs processing'}, async progress => {
-                const pjPath = await selectProject(projectPath);
-    
-                const readFilePath = pjPath + SETTING_JSON;
-                let settingInfo: SettingJson;
-                try {
-                    const blob: Uint8Array =  await vscode.workspace.fs.readFile(vscode.Uri.file(readFilePath));
-                    settingInfo = JSON.parse(Buffer.from(blob).toString('utf8'));
-                } catch(err) {
-                    vscode.window.showInformationMessage('read fail setting json file', {modal: true});
-                    return;
-                }
-        
-                if(settingInfo.dir.length === 0){
-                    vscode.window.showInformationMessage('Configuration not found, please check setting.json.', {modal: true});
-                    return;
-                }
-    
-                await Promise.all(settingInfo.dir.map(async dir => {
-                    await execProc(pjPath, dir, osType);
-                }));
-                vscode.window.showInformationMessage('npm install multi Done', {modal: true});
-            })
+            const pjPath = await selectProject();
+            if (pjPath === undefined) {
+                return;
+            }
+
+            let settingInfo: SettingJson;
+            try {
+                const blob = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(vscode.Uri.file(pjPath), SETTING_JSON));
+                settingInfo = JSON.parse(Buffer.from(blob).toString('utf8'));
+            } catch (err) {
+                vscode.window.showErrorMessage(`read fail setting json file (${SETTING_JSON})`, { modal: true });
+                return;
+            }
+
+            if (!Array.isArray(settingInfo?.dir) || settingInfo.dir.length === 0) {
+                vscode.window.showInformationMessage('Configuration not found, please check setting.json.', { modal: true });
+                return;
+            }
+
+            return runInstalls(pjPath, settingInfo.dir, 'npm install multi');
         })
-    )
+    );
 
     context.subscriptions.push(
         vscode.commands.registerCommand('npm-installs.install-single', async () => {
-            vscode.window.withProgress({location: vscode.ProgressLocation.Window, title: 'npm installs processing'}, async progress => {
-                const pjPath = await selectProject(projectPath);
-    
-                const dir = await vscode.window.showInputBox({
-                    title: 'npm install folder'
-                });
-    
-                if (dir !== undefined) {
-                    await execProc(pjPath, dir, osType);
-                } else {
-                    return;
-                }
-    
-                vscode.window.showInformationMessage('npm install Done', {modal: true});
+            const pjPath = await selectProject();
+            if (pjPath === undefined) {
+                return;
+            }
+
+            const dir = await vscode.window.showInputBox({
+                title: 'npm install folder',
+                placeHolder: 'relative path from the project root (empty = project root)'
             });
+            if (dir === undefined) {
+                return;
+            }
+
+            return runInstalls(pjPath, [dir], 'npm install');
         })
-    )
+    );
 
     context.subscriptions.push(
         vscode.commands.registerCommand('npm-installs.install-all', async () => {
-            vscode.window.withProgress({location: vscode.ProgressLocation.Window, title: 'npm installs processing'}, async progress => {
-                const pjPath = await selectProject(projectPath);
-                
-                progress.report({ message: 'search package.json file'});
-                const filePath = await findFoldersWithFile(pjPath, 'package.json', pjPath);
-                if(filePath.length === 0){
-                    vscode.window.showInformationMessage('not exist package.json file for this directory', {modal: true});
-                    return;
-                }
-    
-                progress.report({ message: 'installing'});
-                await Promise.all(filePath.map(async dir => {
-                    await execProc(pjPath, dir, osType);
-                }));
-                    
-                vscode.window.showInformationMessage('npm install Done', {modal: true});
-            })
+            const pjPath = await selectProject();
+            if (pjPath === undefined) {
+                return;
+            }
+
+            const dirs = await vscode.window.withProgress(
+                { location: vscode.ProgressLocation.Window, title: 'npm installs: searching package.json' },
+                () => findDirsWithFile(pjPath, 'package.json')
+            );
+            if (dirs.length === 0) {
+                vscode.window.showInformationMessage('not exist package.json file for this directory', { modal: true });
+                return;
+            }
+
+            return runInstalls(pjPath, dirs, 'npm install');
         })
-    )
+    );
 }
 
-async function selectProject(projectPath: string[]): Promise<string> {
-    let pjPath;
-    if(projectPath.length > 1) {
-        const options: vscode.QuickPickOptions = {placeHolder: "In what directory do you run npm install?"};
-        pjPath = await vscode.window
-            .showQuickPick(projectPath, options)
-            .then(select => {return select;});
-        
-        if(pjPath === undefined) {
-            throw new Error('Please select a project.');
-        }
-    } else {
-        pjPath = projectPath[0];
+/** Let the user pick a workspace folder when there are several. */
+async function selectProject(): Promise<string | undefined> {
+    const projectPath = (vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath);
+    if (projectPath.length === 0) {
+        vscode.window.showErrorMessage('Please open a folder or workspace first.');
+        return undefined;
     }
-    return pjPath;
+    if (projectPath.length === 1) {
+        return projectPath[0];
+    }
+    return vscode.window.showQuickPick(projectPath, { placeHolder: 'In what directory do you run npm install?' });
 }
 
-async function execProc(projectPath: string, dir: string, osType: string){
-    
-    let execPath: string, rmCommands: string[];
-    const tmpPath = `${projectPath}/${dir}`
-    if(osType === 'win32'){
-        execPath = tmpPath;
-        console.log('execPath: ', tmpPath);
-        rmCommands = [
-            'if exist node_modules rmdir /s /q node_modules',
-            'if exist package-lock.json del package-lock.json'
-        ];
-    }else{
-        execPath = tmpPath;
-        console.log('execPath: ', execPath);
-        rmCommands = [
-            'rm -rf node_modules',
-            'rm -f package-lock.json'
-        ];
-    }
+function getOptions(): Pick<InstallOptions, 'cleanInstall' | 'concurrency'> {
+    const config = vscode.workspace.getConfiguration('npm-installs');
+    return {
+        cleanInstall: config.get<boolean>('cleanInstall', true),
+        concurrency: config.get<number>('concurrency', 0),
+    };
+}
 
-    try {
-        await execSyncCommands(rmCommands, execPath);
-        await execSyncCommands(['npm install'], execPath)
-            .then(output => {
-                outputChannel.append(`===================================================\nexecute path: ${execPath}\n${output}\n`);
-                outputChannel.show();
+/** Run installs in parallel with progress + per-directory logs. */
+async function runInstalls(projectPath: string, dirs: string[], label: string): Promise<InstallResult[]> {
+    const options = getOptions();
+    outputChannel.show(true);
+    outputChannel.appendLine(`${SEPARATOR}\n${label} start: ${projectPath} (${new Date().toLocaleString()})`);
+
+    const results = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `${label}`, cancellable: true },
+        async (progress, token) => {
+            const abort = new AbortController();
+            token.onCancellationRequested(() => abort.abort());
+            const total = new Set(dirs).size;
+            progress.report({ message: `0/${total}` });
+
+            return installDirs(projectPath, dirs, {
+                ...options,
+                signal: abort.signal,
+                onStart: dir => outputChannel.appendLine(`▶ start  : ${displayDir(dir)}`),
+                onFinish: (res, finished, all) => {
+                    const mark = res.success ? '✔ done   ' : '✖ failed ';
+                    outputChannel.appendLine(`${mark}: ${displayDir(res.dir)} (${(res.durationMs / 1000).toFixed(1)}s)`);
+                    outputChannel.appendLine(`${SEPARATOR}\nexecute path: ${res.absPath}\n${res.output}${res.error ? `\nERROR: ${res.error}` : ''}\n`);
+                    progress.report({ message: `${finished}/${all}`, increment: 100 / all });
+                },
             });
-    } catch(err: any) {
-        outputChannel.append(`===================================================\nexecute path: ${execPath}\n${err.stack}\n`);
-        outputChannel.show();
-        vscode.window.showInformationMessage('Fail npm install', {modal: true});
-        throw new Error(err);
-    }
-}
-
-async function execSyncCommands(commands: string[], execPath: string){
-    try {
-        const commandString = commands.join(' && ');
-        return execSync(commandString, { cwd: execPath, encoding: 'utf-8'});
-    } catch (err: any) {
-        console.error('Error executing commands:', err);
-        throw new Error(err);
-    }
-}
-
-async function findFoldersWithFile(directory: string, targetFileName: string, projectPath: string, results: string[] = []) {
-    const files = await vscode.workspace.fs.readDirectory(vscode.Uri.file(directory));
-  
-    for (const file of files) {
-        const name = file[0];
-        const fileType = file[1];
-        const filePath = directory + '/' + name;
-
-        const regex = new RegExp(/^\./);
-        if(name === 'node_modules' || regex.test(name)) continue;
-    
-        if (fileType === 2) {
-          await findFoldersWithFile(filePath, targetFileName, projectPath, results);
-        } else if (fileType === 1 && name === targetFileName) {
-          const tmpDir = filePath.substring(projectPath.length + 1, filePath.length);
-          const dirPath = tmpDir.substring(0, tmpDir.indexOf('/'));
-          results.push(dirPath);
         }
+    );
+
+    const failed = results.filter(r => !r.success);
+    outputChannel.appendLine(`${label} finished: ${results.length - failed.length} succeeded, ${failed.length} failed`);
+    if (failed.length === 0) {
+        vscode.window.showInformationMessage(`${label} Done (${results.length})`, { modal: true });
+    } else {
+        vscode.window.showErrorMessage(
+            `Fail npm install: ${failed.map(r => displayDir(r.dir)).join(', ')}`,
+            { modal: true, detail: 'See the "npm installs" output channel for details.' }
+        );
     }
     return results;
+}
+
+function displayDir(dir: string): string {
+    return dir === '' ? '(project root)' : dir;
 }
 
 export function deactivate() {}

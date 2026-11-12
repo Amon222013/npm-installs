@@ -2,7 +2,7 @@
   "name": "npm-installs",
   "displayName": "npm installs",
   "description": "npm installs",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "4mon",
   "repository": {
     "type": "git",
@@ -32,7 +32,23 @@
         "command": "npm-installs.install-all",
         "title": "npm-install-all"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "npm installs",
+      "properties": {
+        "npm-installs.concurrency": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Maximum number of npm install processes run in parallel. 0 = auto (number of CPUs, up to 4)."
+        },
+        "npm-installs.cleanInstall": {
+          "type": "boolean",
+          "default": true,
+          "description": "Delete node_modules and package-lock.json before npm install. Turn off to keep package-lock.json (faster)."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
@@ -43,26 +59,23 @@
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js"
-  },
-  "dependencies": {
-    "encoding-japanese": "^2.0.0",
-    "iconv-lite": "^0.6.3"
+    "test": "node ./out/test/runTest.js",
+    "test-unit": "npm run compile-tests && mocha --ui tdd --timeout 300000 out/test/unit/*.test.js"
   },
   "devDependencies": {
-    "@types/vscode": "^1.79.0",
     "@types/glob": "^8.0.0",
     "@types/mocha": "^10.0.1",
     "@types/node": "16.x",
+    "@types/vscode": "^1.79.0",
     "@typescript-eslint/eslint-plugin": "^5.45.0",
     "@typescript-eslint/parser": "^5.45.0",
+    "@vscode/test-electron": "^2.2.0",
     "eslint": "^8.28.0",
     "glob": "^8.0.3",
     "mocha": "^10.1.0",
-    "typescript": "^4.9.3",
     "ts-loader": "^9.4.1",
+    "typescript": "^4.9.3",
     "webpack": "^5.75.0",
-    "webpack-cli": "^5.0.0",
-    "@vscode/test-electron": "^2.2.0"
+    "webpack-cli": "^5.0.0"
   }
 }
