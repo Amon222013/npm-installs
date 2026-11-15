@@ -24,7 +24,10 @@ suite('Extension Test Suite', function () {
 
 	test('workspace is the fixture', () => {
 		assert.ok(fixture);
-		assert.strictEqual(vscode.workspace.workspaceFolders?.[0].uri.fsPath, fs.realpathSync(fixture));
+		const folder = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
+		assert.ok(folder);
+		// macOS: os.tmpdir() (/var/folders/...) is a symlink to /private/var/...
+		assert.strictEqual(fs.realpathSync(folder), fs.realpathSync(fixture));
 	});
 
 	suiteSetup(async () => {
@@ -52,11 +55,11 @@ suite('Extension Test Suite', function () {
 		assert.ok(!fs.existsSync(path.join(fixture, 'node_modules')));
 	});
 
-	test('npm-install-all installs every package.json dir (incl. nested) in parallel', async () => {
+	test('npm-install-all installs every package.json dir (incl. nested) in parallel, workspace members via their root', async () => {
 		const t = Date.now();
 		const results = await vscode.commands.executeCommand<InstallResult[]>('npm-installs.install-all');
 		console.log(`    install-all: ${Date.now() - t}ms`, results.map(r => `${r.dir || '(root)'}=${r.durationMs}ms`).join(' '));
-		assert.deepStrictEqual(results.map(r => r.dir), ['', 'back', 'front', 'packages/lib']);
+		assert.deepStrictEqual(results.map(r => r.dir), ['', 'back', 'front', 'mono', 'packages/lib']);
 		for (const r of results) {
 			assert.ok(r.success, `${r.dir}: ${r.error}\n${r.output}`);
 			assert.ok(fs.existsSync(path.join(r.absPath, 'package-lock.json')));
@@ -65,6 +68,10 @@ suite('Extension Test Suite', function () {
 		assert.strictEqual(installedVersion('', 'is-number'), '7.0.0');
 		assert.strictEqual(installedVersion('front', 'chalk'), '4.1.2');
 		assert.strictEqual(installedVersion('packages/lib', 'is-number'), '6.0.0');
+		// the workspace member was installed by `mono` (hoisted to mono/node_modules, member linked)
+		assert.strictEqual(installedVersion('mono', 'ms'), '2.1.3');
+		assert.ok(fs.existsSync(path.join(fixture, 'mono', 'node_modules', 'm', 'package.json')));
+		assert.ok(!fs.existsSync(path.join(fixture, 'mono', 'packages', 'm', 'package-lock.json')));
 	});
 
 	test('settings are read (cleanInstall=false keeps lock file)', async () => {

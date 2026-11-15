@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { findDirsWithFile, installDirs, InstallOptions, InstallResult } from './installer';
+import { excludeWorkspaceMembers, findDirsWithFile, installDirs, InstallOptions, InstallResult, WorkspaceFilterResult } from './installer';
 
 type SettingJson = {
     dir: string[]
@@ -68,16 +68,16 @@ export function activate(context: vscode.ExtensionContext): void {
                 return;
             }
 
-            const dirs = await vscode.window.withProgress(
+            const { dirs, skipped } = await vscode.window.withProgress(
                 { location: vscode.ProgressLocation.Window, title: 'npm installs: searching package.json' },
-                () => findDirsWithFile(pjPath, 'package.json')
+                async () => excludeWorkspaceMembers(pjPath, await findDirsWithFile(pjPath, 'package.json'))
             );
             if (dirs.length === 0) {
                 vscode.window.showInformationMessage('not exist package.json file for this directory', { modal: true });
                 return;
             }
 
-            return runInstalls(pjPath, dirs, 'npm install');
+            return runInstalls(pjPath, dirs, 'npm install', skipped);
         })
     );
 }
@@ -104,30 +104,42 @@ function getOptions(): Pick<InstallOptions, 'cleanInstall' | 'concurrency'> {
 }
 
 /** Run installs in parallel with progress + per-directory logs. */
-async function runInstalls(projectPath: string, dirs: string[], label: string): Promise<InstallResult[]> {
+async function runInstalls(
+    projectPath: string,
+    dirs: string[],
+    label: string,
+    skipped: WorkspaceFilterResult['skipped'] = []
+): Promise<InstallResult[]> {
     const options = getOptions();
     outputChannel.show(true);
     outputChannel.appendLine(`${SEPARATOR}\n${label} start: ${projectPath} (${new Date().toLocaleString()})`);
+    for (const s of skipped) {
+        outputChannel.appendLine(`- skip   : ${displayDir(s.dir)} (managed by workspace root: ${displayDir(s.workspaceRoot)})`);
+    }
 
     const results = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: `${label}`, cancellable: true },
         async (progress, token) => {
             const abort = new AbortController();
-            token.onCancellationRequested(() => abort.abort());
-            const total = new Set(dirs).size;
-            progress.report({ message: `0/${total}` });
+            const sub = token.onCancellationRequested(() => abort.abort());
+            try {
+                const total = new Set(dirs).size;
+                progress.report({ message: `0/${total}` });
 
-            return installDirs(projectPath, dirs, {
-                ...options,
-                signal: abort.signal,
-                onStart: dir => outputChannel.appendLine(`▶ start  : ${displayDir(dir)}`),
-                onFinish: (res, finished, all) => {
-                    const mark = res.success ? '✔ done   ' : '✖ failed ';
-                    outputChannel.appendLine(`${mark}: ${displayDir(res.dir)} (${(res.durationMs / 1000).toFixed(1)}s)`);
-                    outputChannel.appendLine(`${SEPARATOR}\nexecute path: ${res.absPath}\n${res.output}${res.error ? `\nERROR: ${res.error}` : ''}\n`);
-                    progress.report({ message: `${finished}/${all}`, increment: 100 / all });
-                },
-            });
+                return await installDirs(projectPath, dirs, {
+                    ...options,
+                    signal: abort.signal,
+                    onStart: dir => outputChannel.appendLine(`▶ start  : ${displayDir(dir)}`),
+                    onFinish: (res, finished, all) => {
+                        const mark = res.success ? '✔ done   ' : '✖ failed ';
+                        outputChannel.appendLine(`${mark}: ${displayDir(res.dir)} (${(res.durationMs / 1000).toFixed(1)}s)`);
+                        outputChannel.appendLine(`${SEPARATOR}\nexecute path: ${res.absPath}\n${res.output}${res.error ? `\nERROR: ${res.error}` : ''}\n`);
+                        progress.report({ message: `${finished}/${all}`, increment: 100 / all });
+                    },
+                });
+            } finally {
+                sub.dispose();
+            }
         }
     );
 

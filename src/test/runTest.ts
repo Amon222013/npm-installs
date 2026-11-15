@@ -17,6 +17,9 @@ function createFixture(): string {
 	writeJson(path.join(root, 'front', 'package.json'), pkg('front', { 'chalk': '4.1.2' }));
 	writeJson(path.join(root, 'back', 'package.json'), pkg('back', { 'ms': '2.1.3' }));
 	writeJson(path.join(root, 'packages', 'lib', 'package.json'), pkg('lib', { 'is-odd': '3.0.1' }));
+	// npm workspaces monorepo: install-all must install `mono` only, not its member in parallel
+	writeJson(path.join(root, 'mono', 'package.json'), { name: 'mono', version: '1.0.0', private: true, workspaces: ['packages/*'] });
+	writeJson(path.join(root, 'mono', 'packages', 'm', 'package.json'), pkg('m', { 'ms': '2.1.3' }));
 	writeJson(path.join(root, 'npm-installs_setting.json'), { dir: ['back', 'packages/lib'] });
 	return root;
 }

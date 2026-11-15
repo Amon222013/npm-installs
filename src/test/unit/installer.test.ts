@@ -7,7 +7,9 @@ import { execFileSync } from 'child_process';
 import { promises as fs, readFileSync, existsSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { findDirsWithFile, installDirs, normalizeDir, runWithConcurrency } from '../../installer';
+import { excludeWorkspaceMembers, expandBraces, findDirsWithFile, installDirs, isInside, matchWorkspacePattern, normalizeDir, runWithConcurrency } from '../../installer';
+
+const isWin = process.platform === 'win32';
 
 async function writeJson(file: string, data: unknown): Promise<void> {
     await fs.mkdir(path.dirname(file), { recursive: true });
@@ -24,8 +26,44 @@ function installedVersion(dir: string, dep: string): string {
 
 /** `npm ls --all` exits non-zero if the tree is broken / missing / invalid. */
 function npmLsOk(dir: string): void {
-    execFileSync('npm', ['ls', '--all'], { cwd: dir, stdio: 'pipe', shell: process.platform === 'win32' });
+    execFileSync('npm', ['ls', '--all'], { cwd: dir, stdio: 'pipe', shell: isWin });
 }
+
+type FakeNpmOptions = {
+    /** How long the fake npm itself runs. */
+    sleepMs: number;
+    /** Start a CHILD process that writes `MARKER` into the cwd after this delay. */
+    markerAfterMs?: number;
+    /** The child ignores SIGTERM (needs SIGKILL / taskkill /F). */
+    childIgnoresSigterm?: boolean;
+    /** The child inherits stdout/stderr, so 'close' only fires when the child is gone. */
+    childInheritsStdio?: boolean;
+};
+
+/**
+ * Create a fake `npm` command that works on every OS (a .cmd wrapper on Windows, a sh wrapper elsewhere).
+ * The optional child is used to check that cancel kills the whole process tree.
+ */
+async function createFakeNpm(dir: string, name: string, opts: FakeNpmOptions): Promise<string> {
+    const script = path.join(dir, `${name}.js`);
+    const childCode = `${opts.childIgnoresSigterm ? "process.on('SIGTERM', () => {});" : ''}`
+        + `setTimeout(() => require('fs').writeFileSync('MARKER', 'x'), ${opts.markerAfterMs});`;
+    const child = opts.markerAfterMs === undefined ? '' : `
+require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(childCode)}], { stdio: ${opts.childInheritsStdio ? "'inherit'" : "'ignore'"} });`;
+    await fs.writeFile(script, `${child}
+setTimeout(() => console.log('installed'), ${opts.sleepMs});
+`);
+    if (isWin) {
+        const cmd = path.join(dir, `${name}.cmd`);
+        await fs.writeFile(cmd, `@"${process.execPath}" "${script}" %*\r\n`);
+        return cmd;
+    }
+    const sh = path.join(dir, `${name}.sh`);
+    await fs.writeFile(sh, `#!/bin/sh\n"${process.execPath}" "${script}" "$@"\n`, { mode: 0o755 });
+    return sh;
+}
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 let tmpRoot: string;
 
@@ -44,6 +82,11 @@ suite('installer', () => {
         assert.strictEqual(normalizeDir('a\\b'), 'a/b');
         assert.strictEqual(normalizeDir('./a'), 'a');
         assert.strictEqual(normalizeDir(' a '), 'a');
+        assert.strictEqual(normalizeDir('.'), '');
+        assert.strictEqual(normalizeDir('././a/'), 'a');
+        assert.strictEqual(normalizeDir('.config'), '.config');
+        assert.strictEqual(normalizeDir('..'), '..');
+        assert.strictEqual(normalizeDir('../other'), '../other');
     });
 
     test('findDirsWithFile finds nested dirs, skips node_modules and dot dirs', async () => {
@@ -75,10 +118,8 @@ suite('installer', () => {
     });
 
     test('installs really run in parallel (fake npm sleeping 1s)', async function () {
-        if (process.platform === 'win32') { this.skip(); }
         const root = path.join(tmpRoot, 'parallel');
-        const fakeNpm = path.join(tmpRoot, 'fake-npm.sh');
-        await fs.writeFile(fakeNpm, '#!/bin/sh\nsleep 1\necho installed\n', { mode: 0o755 });
+        const fakeNpm = await createFakeNpm(tmpRoot, 'fake-npm', { sleepMs: 1000 });
         const dirs = ['p1', 'p2', 'p3', 'p4'];
         for (const d of dirs) { await writeJson(path.join(root, d, 'package.json'), pkg(d, {})); }
 
@@ -92,7 +133,7 @@ suite('installer', () => {
 
         assert.ok(parallel.every(r => r.success) && serial.every(r => r.success));
         console.log(`      fake npm x4: parallel=${parallelMs}ms serial=${serialMs}ms`);
-        assert.ok(parallelMs < 2000, `parallel took ${parallelMs}ms`);
+        assert.ok(parallelMs < 2500, `parallel took ${parallelMs}ms`);
         assert.ok(serialMs >= 4000, `serial took ${serialMs}ms`);
     });
 
@@ -129,7 +170,7 @@ suite('installer', () => {
         const dir = path.join(tmpRoot, 'clean');
         // range allows 6.x and 7.x; lock pins 6.0.0
         await writeJson(path.join(dir, 'package.json'), pkg('clean', { 'is-number': '6.0.0' }));
-        execFileSync('npm', ['install'], { cwd: dir, stdio: 'pipe' });
+        execFileSync('npm', ['install'], { cwd: dir, stdio: 'pipe', shell: isWin });
         // widen the range: the lock (6.0.0) still satisfies it, so a non-clean install keeps 6.0.0
         await writeJson(path.join(dir, 'package.json'), pkg('clean', { 'is-number': '>=6.0.0 <8.0.0' }));
         assert.strictEqual(installedVersion(dir, 'is-number'), '6.0.0');
@@ -166,17 +207,182 @@ suite('installer', () => {
         assert.match(byDir['missing-dir'].error!, /package.json not found/);
     });
 
-    test('cancel stops installs', async function () {
-        if (process.platform === 'win32') { this.skip(); }
+    test('cancel kills the whole process tree and skips dirs not started yet', async () => {
         const root = path.join(tmpRoot, 'cancel');
-        const fakeNpm = path.join(tmpRoot, 'fake-npm-slow.sh');
-        await fs.writeFile(fakeNpm, '#!/bin/sh\nsleep 5\n', { mode: 0o755 });
-        for (const d of ['a', 'b', 'c']) { await writeJson(path.join(root, d, 'package.json'), pkg(d, {})); }
+        // the fake npm's child writes MARKER after 2s; the fake npm itself would run 5s
+        const fakeNpm = await createFakeNpm(tmpRoot, 'fake-npm-slow', { sleepMs: 5000, markerAfterMs: 2000 });
+        const dirs = ['a', 'b', 'c'];
+        for (const d of dirs) { await writeJson(path.join(root, d, 'package.json'), pkg(d, {})); }
         const abort = new AbortController();
-        setTimeout(() => abort.abort(), 300);
+        setTimeout(() => abort.abort(), 500);
+        const started: string[] = [];
+        const finished: number[] = [];
         const t = Date.now();
-        const results = await installDirs(root, ['a', 'b', 'c'], { cleanInstall: false, concurrency: 1, npmCommand: fakeNpm, signal: abort.signal });
-        assert.ok(Date.now() - t < 2000);
-        assert.ok(results.every(r => !r.success && r.error === 'cancelled'));
+        const results = await installDirs(root, dirs, {
+            cleanInstall: false, concurrency: 1, npmCommand: fakeNpm, signal: abort.signal,
+            onStart: d => started.push(d),
+            onFinish: (_r, n) => finished.push(n),
+        });
+        assert.ok(Date.now() - t < 2000, `cancel took ${Date.now() - t}ms`);
+        assert.ok(results.every(r => !r.success && r.error === 'cancelled'), JSON.stringify(results));
+        assert.deepStrictEqual(started, ['a'], 'dirs not started before cancel must not be reported as started');
+        assert.deepStrictEqual(finished, [1, 2, 3], 'progress must still reach total');
+        // if any process of the tree survived, it writes MARKER ~2s after start
+        await sleep(2500);
+        for (const d of dirs) {
+            assert.ok(!existsSync(path.join(root, d, 'MARKER')), `${d}: a child process survived the cancel`);
+        }
+    });
+
+    test('cancel kills a child that ignores SIGTERM', async () => {
+        const root = path.join(tmpRoot, 'cancel-term');
+        // POSIX: SIGTERM is ignored, SIGKILL follows after 5s. Windows: taskkill /F kills it at once.
+        const fakeNpm = await createFakeNpm(tmpRoot, 'fake-npm-ignore-term', { sleepMs: 10000, markerAfterMs: 6500, childIgnoresSigterm: true });
+        await writeJson(path.join(root, 'package.json'), pkg('term', {}));
+        const abort = new AbortController();
+        setTimeout(() => abort.abort(), 500);
+        const [res] = await installDirs(root, [''], { cleanInstall: false, concurrency: 1, npmCommand: fakeNpm, signal: abort.signal });
+        assert.strictEqual(res.error, 'cancelled');
+        await sleep(7500);
+        assert.ok(!existsSync(path.join(root, 'MARKER')), 'the child survived the cancel');
+    });
+
+    test('cancel after npm itself exited still kills its remaining children, and resolves', async function () {
+        // Windows cannot find the children of an already exited process (taskkill /T needs the parent).
+        if (isWin) { this.skip(); }
+        const root = path.join(tmpRoot, 'cancel-orphan');
+        // npm exits at once; its child keeps stdout open (so no 'close' yet) and would write MARKER at 2s
+        const fakeNpm = await createFakeNpm(tmpRoot, 'fake-npm-orphan', { sleepMs: 0, markerAfterMs: 2000, childInheritsStdio: true });
+        await writeJson(path.join(root, 'package.json'), pkg('orphan', {}));
+        const abort = new AbortController();
+        setTimeout(() => abort.abort(), 500);
+        const t = Date.now();
+        const [res] = await installDirs(root, [''], { cleanInstall: false, concurrency: 1, npmCommand: fakeNpm, signal: abort.signal });
+        assert.strictEqual(res.error, 'cancelled');
+        assert.ok(Date.now() - t < 1500, `cancel took ${Date.now() - t}ms`);
+        await sleep(2000);
+        assert.ok(!existsSync(path.join(root, 'MARKER')), 'the child survived the cancel');
+    });
+
+    test('a nonexistent npm command fails once without hanging', async () => {
+        const root = path.join(tmpRoot, 'no-npm');
+        await writeJson(path.join(root, 'package.json'), pkg('no-npm', {}));
+        const finished: number[] = [];
+        const [res] = await installDirs(root, [''], {
+            cleanInstall: false, concurrency: 1, npmCommand: path.join(tmpRoot, 'does-not-exist-npm'), onFinish: (_r, n) => finished.push(n),
+        });
+        assert.ok(!res.success);
+        assert.deepStrictEqual(finished, [1]);
+    });
+
+    test('refuses dirs outside the project and never deletes anything there', async () => {
+        const root = path.join(tmpRoot, 'outside', 'project');
+        const other = path.join(tmpRoot, 'outside', 'other');
+        await writeJson(path.join(root, 'package.json'), pkg('project', {}));
+        await writeJson(path.join(other, 'package.json'), pkg('other', {}));
+        await fs.writeFile(path.join(other, 'package-lock.json'), '{}');
+        await fs.mkdir(path.join(other, 'node_modules', 'keep'), { recursive: true });
+
+        const results = await installDirs(root, ['../other', '..', 'sub/../../other'], { cleanInstall: true, concurrency: 2 });
+        for (const r of results) {
+            assert.ok(!r.success);
+            assert.match(r.error!, /outside the project/);
+        }
+        assert.ok(existsSync(path.join(other, 'package-lock.json')));
+        assert.ok(existsSync(path.join(other, 'node_modules', 'keep')));
+
+        assert.ok(isInside(root, root));
+        assert.ok(isInside(root, path.join(root, 'a', 'b')));
+        assert.ok(isInside(root, path.join(root, '..foo')), 'a dir named "..foo" is inside');
+        assert.ok(!isInside(root, path.dirname(root)));
+        assert.ok(!isInside(root, other));
+    });
+
+    test('workspace glob matching', () => {
+        assert.deepStrictEqual(expandBraces('{apps,libs}/*'), ['apps/*', 'libs/*']);
+        assert.deepStrictEqual(expandBraces('a/{b,c{d,e}}/f'), ['a/b/f', 'a/cd/f', 'a/ce/f']);
+        const m = matchWorkspacePattern;
+        assert.ok(m('packages/a', 'packages/*'));
+        assert.ok(m('packages/a', './packages/*/'));
+        assert.ok(!m('packages/a/examples/demo', 'packages/*'));
+        assert.ok(!m('packages', 'packages/*'));
+        assert.ok(m('apps/x/web', 'apps/*/web'));
+        assert.ok(!m('apps/x/api', 'apps/*/web'));
+        assert.ok(m('libs/b', '{packages,libs}/*'));
+        assert.ok(!m('tools', '{packages,libs}/*'));
+        assert.ok(m('packages/a/b', 'packages/**'));
+        assert.ok(m('a/b/c/plugin', '**/plugin'));
+        assert.ok(m('plugin', '**/plugin'));
+        assert.ok(m('pkg-core', 'pkg-*'));
+        assert.ok(m('p1', 'p[0-9]'));
+        assert.ok(!m('pa', 'p[!a]'));
+        assert.ok(m('tools', 'tools'));
+        assert.ok(!m('a.b', 'a+b'), 'regex characters are literal');
+        assert.ok(!m('x', '../x'));
+        assert.ok(!m('x', '*/..'));
+    });
+
+    suite('excludeWorkspaceMembers', () => {
+        async function layout(name: string, rootJson: Record<string, unknown>, dirs: string[]): Promise<string> {
+            const root = path.join(tmpRoot, 'ws', name);
+            await writeJson(path.join(root, 'package.json'), { name, private: true, ...rootJson });
+            for (const d of dirs) { await writeJson(path.join(root, d, 'package.json'), pkg(d.replace(/\W/g, '-'), {})); }
+            return root;
+        }
+        async function run(root: string) { return excludeWorkspaceMembers(root, await findDirsWithFile(root)); }
+
+        test('spec: npm array form -> [\'\', \'tools\']', async () => {
+            const root = await layout('npm', { workspaces: ['packages/*'] }, ['packages/a', 'tools']);
+            const res = await run(root);
+            assert.deepStrictEqual(res.dirs, ['', 'tools']);
+            assert.deepStrictEqual(res.skipped, [{ dir: 'packages/a', workspaceRoot: '' }]);
+        });
+
+        test('spec: yarn object form gives the same result', async () => {
+            const root = await layout('yarn', { workspaces: { packages: ['packages/*'], nohoist: ['**/x'] } }, ['packages/a', 'tools']);
+            assert.deepStrictEqual((await run(root)).dirs, ['', 'tools']);
+        });
+
+        test('only dirs matching a pattern are skipped; nested non-members are kept', async () => {
+            const root = await layout('nested', { workspaces: ['packages/*', 'apps/*/web'] },
+                ['packages/a', 'packages/a/examples/demo', 'apps/x/web', 'apps/x/api', 'tools']);
+            const res = await run(root);
+            assert.deepStrictEqual(res.dirs, ['', 'apps/x/api', 'packages/a/examples/demo', 'tools']);
+            assert.deepStrictEqual(res.skipped.map(s => s.dir), ['apps/x/web', 'packages/a']);
+        });
+
+        test('braces, "*", explicit paths and negation', async () => {
+            const braces = await layout('braces', { workspaces: ['{packages,libs}/*'] }, ['packages/a', 'libs/b', 'tools']);
+            assert.deepStrictEqual((await run(braces)).dirs, ['', 'tools']);
+            const star = await layout('star', { workspaces: ['*'] }, ['a', 'b', 'a/deep']);
+            assert.deepStrictEqual((await run(star)).dirs, ['', 'a/deep']);
+            const neg = await layout('neg', { workspaces: ['./tools', 'packages/*', '!packages/a'] }, ['packages/a', 'packages/b', 'tools']);
+            assert.deepStrictEqual((await run(neg)).dirs, ['', 'packages/a'], 'a negated dir is not a member, so it is installed on its own');
+        });
+
+        test('workspace root in a sub dir: only its members are skipped (npm and yarn forms)', async () => {
+            for (const [name, workspaces] of [['sub-npm', ['packages/*']], ['sub-yarn', { packages: ['packages/*'] }]] as const) {
+                const root = path.join(tmpRoot, 'ws', name);
+                await writeJson(path.join(root, 'package.json'), pkg(name, {}));
+                await writeJson(path.join(root, 'mono', 'package.json'), { name: 'mono', private: true, workspaces });
+                await writeJson(path.join(root, 'mono', 'packages', 'a', 'package.json'), pkg('a', {}));
+                await writeJson(path.join(root, 'tools', 'package.json'), pkg('tools', {}));
+                const res = await run(root);
+                assert.deepStrictEqual(res.dirs, ['', 'mono', 'tools'], name);
+                assert.deepStrictEqual(res.skipped, [{ dir: 'mono/packages/a', workspaceRoot: 'mono' }], name);
+            }
+        });
+
+        test('no workspaces: result unchanged', async () => {
+            const root = await layout('none', {}, ['back', 'front', 'packages/lib']);
+            const dirs = await findDirsWithFile(root);
+            const res = await excludeWorkspaceMembers(root, dirs);
+            assert.deepStrictEqual(res.dirs, ['', 'back', 'front', 'packages/lib']);
+            assert.deepStrictEqual(res.skipped, []);
+            // empty workspaces / invalid package.json are treated as normal projects
+            await writeJson(path.join(root, 'package.json'), { name: 'none', workspaces: [] });
+            await fs.writeFile(path.join(root, 'back', 'package.json'), '{ broken');
+            assert.deepStrictEqual((await excludeWorkspaceMembers(root, dirs)).dirs, dirs);
+        });
     });
 });

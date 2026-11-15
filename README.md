@@ -8,6 +8,7 @@ Note：
 
 1. "npm install" in all directories where package.json currently exists in the project.
    - Open the command palette and select "npm-install-all".
+   - Members of an npm / yarn workspace (directories matched by the `workspaces` globs of a package.json above them) are skipped: they are installed by the workspace root's `npm install`.
 2. npm install" in all directories where package.json exists directly under the project in all directories where package.json exists.
    1. Open the command palette and select "npm-install-single".
    2. Enter the directory where you want to "npm install" in the input box that appears.
@@ -41,6 +42,7 @@ Note：
 
 1. package.jsonが存在する全ディレクトリでnpm installする  
    - コマンドパレットから"npm-install-all"を選択する
+   - npm / yarn のワークスペース（モノレポ）のメンバー（上位の package.json の `workspaces` のパターンに一致するディレクトリ）は対象外です。ワークスペースのルートの `npm install` でインストールされます。
 
 2. 指定したディレクトリのみでnpm installする  
    1. コマンドパレットから"npm-install-single"を選択する
